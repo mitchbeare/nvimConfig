@@ -66,7 +66,7 @@ metaTable.separators = {
   blank = { '', '' },
 }
 
-local active_setp = 'arrow'
+local active_sep = 'arrow'
 
 -- Map vim mode codes to full words for presentation
 metaTable.modes = setmetatable({
@@ -96,14 +96,118 @@ metaTable.modes = setmetatable({
         return {'Unkown', 'U'}
     end
 })
-
-metaTable.get_current_mode = function()
+-- Mode Component
+metaTable.get_current_mode = function(self)
     local current_mode = vim.api.nvim_get_mode().mode -- match return of vim.api to my table to determine what to render
     if self:is_truncated(self.trunc_width.mode) then
-        return string.format(' %s ', modes[current_mode][2]):upper() -- Render short
+        return string.format(' %s ', self.modes[current_mode][2]):upper() -- Render short
     end
 
-    return string.format(' %s ', modes[current_mode[1]]):upper() -- Render full
+    return string.format(' %s ', self.modes[current_mode[1]]):upper() -- Render full
 end
 
+-- Git Component
+metaTable.get_git_status = function(self)
+    -- Hook into gitsigns plugin to do the more then my brain can take tasks of parsing git information for display
+    local signs = vim.b.gitsigns_status_dict or {head = '', added = 0, changed = 0, removed = 0}
+    local is_head_empty = signs.head ~= ''
 
+    if self:is_truncated(self.trunc_width.git_status) then
+        return is_head_empty and string.format('  %s ', signs.head or '') or '' 
+    end
+
+    return is_head_empty and string.format(' +%s ~%s -%s |  %s ', signs.added, signs.changed, signs.removed, signs.head) or ''
+end
+
+-- File Component
+ metaTable.get_filename = function(self)
+  if self:is_truncated(self.trunc_width.filename) then return " %<%f " end
+  return " %<%F "
+end
+
+-- Filetype Component
+metaTable.get_filetype = function()
+  local file_name, file_ext = vim.fn.expand("%:t"), vim.fn.expand("%:e")
+  local icon = require'nvim-web-devicons'.get_icon(file_name, file_ext, { default = true })
+  local filetype = vim.bo.filetype
+
+  if filetype == '' then return '' end
+  return string.format(' %s %s ', icon, filetype):lower()
+end
+
+-- Linecount Component
+metaTable.get_line_col = function(self)
+    if self:is_truncated(self.trunc_width.line_col) then return ' %l:%c ' end
+    return ' Ln %l, Col %c '
+end
+
+-- LSP info component
+metaTable.get_lsp_diagnostic = function(self)
+    local result = {}
+    local levels = {
+        errors = 'Error',
+        warnings = 'Warning',
+        info = 'Information',
+        hints = 'Hint'
+    }
+
+  for k, level in pairs(levels) do
+    result[k] = vim.lsp.diagnostic.get_count(0, level)
+  end
+
+  if self:is_truncated(self.trunc_width.diagnostic) then
+    return ''
+  else
+    return string.format(
+      "| :%s :%s :%s :%s ",
+      result['errors'] or 0, result['warnings'] or 0,
+      result['info'] or 0, result['hints'] or 0
+    )
+  end
+end
+
+-- Time to do the magic combining everything into the strings to be consumed
+metaTable.set_active = function(self)
+  local colours = self.colours
+
+  -- Merge the colour and format styles together
+  local mode = colours.mode .. self:get_current_mode()
+  local mode_alt = colours.mode_alt .. self.separators[active_sep][1]
+  local git = colours.git .. self:get_git_status()
+  local git_alt = colours.git_alt .. self.separators[active_sep][1]
+  local filename = colours.inactive .. self:get_filename()
+  local filetype_alt = colours.filetype_alt .. self.separators[active_sep][2]
+  local filetype = colours.filetype .. self:get_filetype()
+  local line_col = colours.line_col .. self:get_line_col()
+  local line_col_alt = colours.line_col_alt .. self.separators[active_sep][2]
+
+  -- organise the components into the order I would like to see then %= is flipping justifications
+  -- This will create left justified %= center %= right
+  return table.concat({
+      colours.active, mode, mode_alt, git, git_alt,
+      "%=", filename, "%=",
+      filetype_alt, filetype, line_col_alt, line_col
+  })
+end
+
+metaTable.set_inactive = function(self)
+    return self.colours.inactive .. '%= %F $='
+end
+
+-- Now everything is configured and formatted pass to vim
+Statusline = setmetatable(metaTable, {
+    __call = function(statusline, mode)
+        if mode == "active" then return statusline:set_active() end
+        if mode == "inactive" then return statusline:set_inactive() end
+    end
+})
+
+-- When we enter a buffer call metaTable for mode active and generate the format
+-- when a buffer is left do the same for inactive since most information goes away we would like to reflect that
+vim.api.nvim_exec([[
+  augroup Statusline
+  au!
+  au WinEnter,BufEnter * setlocal statusline=%!v:lua.Statusline('active')
+  au WinLeave,BufLeave * setlocal statusline=%!v:lua.Statusline('inactive')
+  augroup END
+]], false)
